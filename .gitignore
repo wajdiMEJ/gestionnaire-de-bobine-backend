@@ -1,0 +1,15 @@
+target/
+*.jar
+*.war
+*.class
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+node_modules/
+package.json
+package-lock.json
+.env
+.DS_Store
+Thumbs.dbdir .gitignore
