@@ -1,17 +1,7 @@
 package com.cablemanager.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.FetchType;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.ManyToOne;
-import jakarta.persistence.OneToOne;
-import jakarta.persistence.CascadeType;
+import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -36,6 +26,10 @@ public class CommandeFabrication {
 
     private String nomClient;
 
+    /**
+     * Section "legacy" gardée pour compatibilité/affichage.
+     * La vraie logique utilise désormais sectionsParCouleur (une section par couleur).
+     */
     private float section;
 
     private float metrageNecessaire;
@@ -63,6 +57,17 @@ public class CommandeFabrication {
     @JsonIgnoreProperties("commande")
     private PlanFabrication planFabrication;
 
+    /**
+     * Section spécifique pour chaque couleur du câble.
+     * Ex : NOIR -> 10mm², ROUGE -> 20mm²
+     */
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "commande_sections_couleur", joinColumns = @JoinColumn(name = "commande_id"))
+    @MapKeyColumn(name = "couleur")
+    @MapKeyEnumerated(EnumType.STRING)
+    @Column(name = "section")
+    private Map<Couleur, Float> sectionsParCouleur = new HashMap<>();
+
     public Map<Couleur, Float> getBesoinsParCouleur() {
         Map<Couleur, Float> besoins = new HashMap<>();
         if (typeCable != null && typeCable.getCouleurs() != null) {
@@ -71,6 +76,18 @@ public class CommandeFabrication {
             }
         }
         return besoins;
+    }
+
+    /**
+     * Retourne la section à utiliser pour une couleur donnée.
+     * Si aucune section spécifique n'est définie pour cette couleur,
+     * on retombe sur la section "legacy" unique.
+     */
+    public float getSectionPourCouleur(Couleur couleur) {
+        if (sectionsParCouleur != null && sectionsParCouleur.containsKey(couleur)) {
+            return sectionsParCouleur.get(couleur);
+        }
+        return this.section;
     }
 
     public boolean estRealisable() {

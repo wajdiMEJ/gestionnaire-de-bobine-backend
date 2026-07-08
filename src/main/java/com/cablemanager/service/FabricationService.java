@@ -59,15 +59,15 @@ public class FabricationService {
         boolean estRealisable = rechercheStock.verifierFaisabilite(commande);
         plan.setEstRealisable(estRealisable);
 
-        float section = commande.getSection();
         Map<Couleur, Float> besoins = commande.getBesoinsParCouleur();
 
         for (Map.Entry<Couleur, Float> entry : besoins.entrySet()) {
             Couleur couleur = entry.getKey();
             float besoinTotal = entry.getValue();
             float besoinRestant = besoinTotal;
+            float sectionCouleur = commande.getSectionPourCouleur(couleur);
 
-            List<Bobine> bobinesSuggerees = rechercheStock.suggererBobines(couleur, section, besoinTotal);
+            List<Bobine> bobinesSuggerees = rechercheStock.suggererBobines(couleur, sectionCouleur, besoinTotal);
 
             for (Bobine bobine : bobinesSuggerees) {
                 if (besoinRestant <= 0) break;
@@ -100,18 +100,18 @@ public class FabricationService {
             throw new IllegalArgumentException("Les informations de la commande sont incomplètes.");
         }
 
-        float section = commande.getSection();
         Map<Couleur, Float> besoins = commande.getBesoinsParCouleur();
         List<BesoinCouleurDto> besoinsParCouleur = new ArrayList<>();
 
         for (Map.Entry<Couleur, Float> entry : besoins.entrySet()) {
             Couleur couleur = entry.getKey();
             float besoin = entry.getValue();
-            float disponible = rechercheStock.calculerTotalDisponible(couleur, section);
+            float sectionCouleur = commande.getSectionPourCouleur(couleur);
+            float disponible = rechercheStock.calculerTotalDisponible(couleur, sectionCouleur);
             float restant = besoin;
 
             List<BobineSuggestionDto> suggestions = new ArrayList<>();
-            List<Bobine> bobinesSuggerees = rechercheStock.suggererBobines(couleur, section, besoin);
+            List<Bobine> bobinesSuggerees = rechercheStock.suggererBobines(couleur, sectionCouleur, besoin);
             for (Bobine bobine : bobinesSuggerees) {
                 if (restant <= 0) break;
 
@@ -132,6 +132,7 @@ public class FabricationService {
 
             besoinsParCouleur.add(BesoinCouleurDto.builder()
                     .couleur(couleur)
+                    .section(sectionCouleur)
                     .besoin(besoin)
                     .disponible(disponible)
                     .suffisant(disponible >= besoin)
@@ -150,11 +151,6 @@ public class FabricationService {
                 .build();
     }
 
-    /**
-     * Confirme la fabrication : applique la consommation sur chaque bobine
-     * (soustraction réelle) et retourne le détail (ancienne/nouvelle longueur + QR code)
-     * pour affichage côté frontend.
-     */
     public ConfirmationFabricationResponse confirmerFabrication(PlanFabrication plan) {
         if (plan == null) {
             throw new IllegalArgumentException("Le plan de fabrication ne peut pas être nul.");
@@ -169,7 +165,6 @@ public class FabricationService {
 
         List<BobineUtiliseeDetailDto> details = new ArrayList<>();
 
-        // Capture l'état AVANT consommation
         for (BobineUtilisee bu : planPersiste.getBobinesUtilisees()) {
             Bobine bobine = bu.getBobine();
             if (bobine == null) continue;
@@ -186,10 +181,8 @@ public class FabricationService {
                     .build());
         }
 
-        // Applique la consommation réelle (soustraction) sur chaque bobine
         planPersiste.appliquer();
 
-        // Sauvegarde + historique + complète le détail avec la NOUVELLE longueur + QR
         int i = 0;
         for (BobineUtilisee bu : planPersiste.getBobinesUtilisees()) {
             Bobine bobine = bu.getBobine();

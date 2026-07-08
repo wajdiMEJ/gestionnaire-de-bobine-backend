@@ -38,19 +38,16 @@ public class RechercheStock {
     }
 
     /**
-     * Sélectionne les bobines nécessaires pour couvrir un besoin donné.
-     *
-     * RÈGLE : on regarde TOUTES les bobines disponibles (neuves ou déjà entamées confondues),
-     * triées de la PLUS PETITE à la PLUS GRANDE.
-     * - Si une seule bobine (la plus petite possible) suffit à couvrir le besoin, on la choisit.
-     * - Sinon, on cumule en commençant par les plus petites jusqu'à couvrir le besoin.
+     * Sélectionne les bobines nécessaires : toutes les bobines dispo (neuves ou entamées confondues)
+     * triées de la PLUS PETITE à la PLUS GRANDE. On prend la plus petite qui suffit seule,
+     * sinon on cumule en commençant par les plus petites.
      */
     public List<Bobine> suggererBobines(Couleur couleur, float section, float besoin) {
         List<Bobine> toutes = bobineRepository.findByCouleurAndSectionAndStatut(couleur, section, StatutBobine.DISPONIBLE);
 
         List<Bobine> disponibles = toutes.stream()
                 .filter(b -> b.getLongueurRestante() > 0)
-                .sorted(Comparator.comparingDouble(Bobine::getLongueurRestante)) // plus petite d'abord
+                .sorted(Comparator.comparingDouble(Bobine::getLongueurRestante))
                 .collect(Collectors.toList());
 
         List<Bobine> suggestions = new ArrayList<>();
@@ -58,12 +55,11 @@ public class RechercheStock {
             return suggestions;
         }
 
-        // Étape 1 : chercher la plus petite bobine qui suffit SEULE (best-fit global)
         Bobine bestFit = null;
         for (Bobine b : disponibles) {
             if (b.getLongueurRestante() >= besoin) {
                 bestFit = b;
-                break; // la liste est déjà triée croissante : la première qui convient est la plus petite suffisante
+                break;
             }
         }
 
@@ -72,7 +68,6 @@ public class RechercheStock {
             return suggestions;
         }
 
-        // Étape 2 : aucune bobine seule ne suffit → cumuler en commençant par les plus petites
         float reste = besoin;
         for (Bobine b : disponibles) {
             if (reste <= 0) break;
@@ -83,15 +78,18 @@ public class RechercheStock {
         return suggestions;
     }
 
+    /**
+     * Vérifie la faisabilité en utilisant la section SPÉCIFIQUE à chaque couleur.
+     */
     public boolean verifierFaisabilite(CommandeFabrication commande) {
         if (commande == null) return false;
 
-        float section = commande.getSection();
         Map<Couleur, Float> besoins = commande.getBesoinsParCouleur();
 
         for (Map.Entry<Couleur, Float> entry : besoins.entrySet()) {
             Couleur couleur = entry.getKey();
             float besoin = entry.getValue();
+            float section = commande.getSectionPourCouleur(couleur);
             float dispo = calculerTotalDisponible(couleur, section);
             if (dispo < besoin) {
                 return false;
