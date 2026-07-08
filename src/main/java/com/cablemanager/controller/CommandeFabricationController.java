@@ -1,0 +1,244 @@
+package com.cablemanager.controller;
+
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import com.cablemanager.dto.PreparationFabricationRequest;
+import com.cablemanager.dto.PreparationFabricationResponse;
+import com.cablemanager.entity.CommandeFabrication;
+import com.cablemanager.entity.Employe;
+import com.cablemanager.entity.PlanFabrication;
+import com.cablemanager.entity.StatutCommande;
+import com.cablemanager.entity.TypeCableConfig;
+import com.cablemanager.repository.CommandeFabricationRepository;
+import com.cablemanager.repository.EmployeRepository;
+import com.cablemanager.repository.TypeCableConfigRepository;
+import com.cablemanager.service.FabricationService;
+import com.cablemanager.service.TypeCableConfigService;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/commandes")
+@CrossOrigin(origins = "*")
+public class CommandeFabricationController {
+
+    private final CommandeFabricationRepository commandeFabricationRepository;
+    private final TypeCableConfigRepository typeCableConfigRepository;
+    private final EmployeRepository employeRepository;
+    private final FabricationService fabricationService;
+    private final TypeCableConfigService typeCableConfigService;
+
+    @Autowired
+    public CommandeFabricationController(CommandeFabricationRepository commandeFabricationRepository,
+                                         TypeCableConfigRepository typeCableConfigRepository,
+                                         EmployeRepository employeRepository,
+                                         FabricationService fabricationService,
+                                         TypeCableConfigService typeCableConfigService) {
+        this.commandeFabricationRepository = commandeFabricationRepository;
+        this.typeCableConfigRepository = typeCableConfigRepository;
+        this.employeRepository = employeRepository;
+        this.fabricationService = fabricationService;
+        this.typeCableConfigService = typeCableConfigService;
+    }
+
+    @GetMapping
+    @Operation(summary = "Lister toutes les commandes de fabrication")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Liste récupérée")
+    })
+    public List<CommandeFabrication> getAllCommandes() {
+        return commandeFabricationRepository.findAll();
+    }
+
+    @PostMapping
+    @Operation(summary = "Créer une commande de fabrication")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "201", description = "Commande créée"),
+            @ApiResponse(responseCode = "400", description = "Données invalides")
+    })
+    public ResponseEntity<?> createCommande(@RequestBody CommandeFabrication commande) {
+        if (commande.getTypeCable() != null 
+            && (commande.getTypeCable().getId() == null || commande.getTypeCable().getId() == 0)) {
+            
+            TypeCableConfig type = typeCableConfigService.trouverOuCreer(
+                commande.getTypeCable().getNom(),
+                commande.getTypeCable().getCouleurs(),
+                commande.getTypeCable().getDescription(),
+                commande.getTypeCable().getNombreConducteurs()
+            );
+            commande.setTypeCable(type);
+            
+        } else if (commande.getTypeCable() != null && commande.getTypeCable().getId() != null) {
+            TypeCableConfig config = typeCableConfigRepository.findById(commande.getTypeCable().getId())
+                    .orElse(null);
+            if (config == null) {
+                return ResponseEntity.badRequest().body("Configuration type de câble introuvable.");
+            }
+            commande.setTypeCable(config);
+        } else {
+            return ResponseEntity.badRequest().body("Le type de câble configuré est requis.");
+        }
+        
+        commande.setStatut(StatutCommande.EN_ATTENTE);
+        
+        if (commande.getEmploye() != null && commande.getEmploye().getId() != null) {
+            Employe emp = employeRepository.findById(commande.getEmploye().getId()).orElse(null);
+            commande.setEmploye(emp);
+        }
+        
+        try {
+            CommandeFabrication saved = commandeFabricationRepository.save(commande);
+            return ResponseEntity.status(HttpStatus.CREATED).body(saved);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body("Erreur lors de la création de la commande : " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/preview")
+    @Operation(summary = "Prévisualiser les besoins et les bobines suggérées")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Prévisualisation générée"),
+            @ApiResponse(responseCode = "400", description = "Données invalides")
+    })
+    public ResponseEntity<?> previewFabrication(@RequestBody PreparationFabricationRequest request) {
+        if (request == null || request.getTypeCableId() == null) {
+            return ResponseEntity.badRequest().body("Le type de câble est requis.");
+        }
+        if (request.getSection() <= 0 || request.getMetrageNecessaire() <= 0) {
+            return ResponseEntity.badRequest().body("La section et le métrage doivent être supérieurs à 0.");
+        }
+
+        TypeCableConfig config = typeCableConfigRepository.findById(request.getTypeCableId()).orElse(null);
+        if (config == null) {
+            return ResponseEntity.badRequest().body("Configuration type de câble introuvable.");
+        }
+
+        try {
+            CommandeFabrication commande = new CommandeFabrication();
+            commande.setTypeCable(config);
+            commande.setSection(request.getSection());
+            commande.setMetrageNecessaire(request.getMetrageNecessaire());
+
+            PreparationFabricationResponse response = fabricationService.previsualiserFabrication(commande);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/{id}/preparer")
+    @Operation(summary = "Préparer la fabrication d'une commande")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Plan généré"),
+            @ApiResponse(responseCode = "404", description = "Commande introuvable"),
+            @ApiResponse(responseCode = "400", description = "Préparation impossible")
+    })
+    public ResponseEntity<?> preparerFabrication(@PathVariable Long id) {
+        try {
+            CommandeFabrication commande = commandeFabricationRepository.findById(id)
+                    .orElseThrow(() -> new IllegalArgumentException("Commande introuvable avec l'ID: " + id));
+            
+            PlanFabrication plan = fabricationService.preparerFabrication(commande);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("id", plan.getId());
+            response.put("estRealisable", plan.isEstRealisable());
+            response.put("metrageTotal", plan.getMetrageTotal());
+            response.put("section", plan.getSection());
+            response.put("nomTypeCable", plan.getNomTypeCable());
+            response.put("dateGeneration", plan.getDateGeneration());
+            response.put("commandeId", plan.getCommande() != null ? plan.getCommande().getId() : null);
+            response.put("nombreBobines", plan.getBobinesUtilisees() != null ? plan.getBobinesUtilisees().size() : 0);
+            response.put("couleursManquantes", plan.getCouleurManquantes());
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/{id}/confirmer")
+    @Operation(summary = "Confirmer la fabrication d'une commande")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Fabrication confirmée"),
+            @ApiResponse(responseCode = "404", description = "Commande introuvable"),
+            @ApiResponse(responseCode = "400", description = "Confirmation impossible")
+    })
+    public ResponseEntity<?> confirmerFabrication(@PathVariable Long id) {
+        try {
+            // ─── 1. Récupérer la commande ───
+            CommandeFabrication commande = commandeFabricationRepository.findById(id)
+                    .orElseThrow(() -> new IllegalArgumentException("Commande introuvable avec l'ID: " + id));
+
+            // ─── 2. Vérifier le statut ───
+            if (commande.getStatut() == StatutCommande.TERMINEE) {
+                return ResponseEntity.badRequest().body("Cette commande est déjà terminée.");
+            }
+            if (commande.getStatut() == StatutCommande.ANNULEE) {
+                return ResponseEntity.badRequest().body("Cette commande est annulée.");
+            }
+
+            // ─── 3. Générer le plan s'il n'existe pas ───
+            PlanFabrication plan = commande.getPlanFabrication();
+            if (plan == null) {
+                plan = fabricationService.preparerFabrication(commande);
+            }
+
+            // ─── 4. Vérifier que le plan est réalisable ───
+            if (!plan.isEstRealisable()) {
+                return ResponseEntity.badRequest().body("Le plan de fabrication n'est pas réalisable (stock insuffisant).");
+            }
+
+            // ─── 5. Confirmer ───
+            fabricationService.confirmerFabrication(plan);
+
+            // ─── 6. Réponse ───
+            Map<String, Object> response = new HashMap<>();
+            response.put("message", "Fabrication confirmée avec succès. Le stock a été mis à jour.");
+            response.put("commandeId", id);
+            response.put("statut", "TERMINEE");
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.badRequest().body("Erreur interne: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/{id}/annuler")
+    @Operation(summary = "Annuler la fabrication d'une commande")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Fabrication annulée"),
+            @ApiResponse(responseCode = "404", description = "Commande introuvable"),
+            @ApiResponse(responseCode = "400", description = "Annulation impossible")
+    })
+    public ResponseEntity<?> annulerFabrication(@PathVariable Long id) {
+        try {
+            CommandeFabrication commande = commandeFabricationRepository.findById(id)
+                    .orElseThrow(() -> new IllegalArgumentException("Commande introuvable avec l'ID: " + id));
+            
+            fabricationService.annulerFabrication(commande);
+            return ResponseEntity.ok("Fabrication annulée avec succès.");
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+}
