@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import com.cablemanager.dto.ConfirmationFabricationResponse;
 import com.cablemanager.dto.PreparationFabricationRequest;
 import com.cablemanager.dto.PreparationFabricationResponse;
 import com.cablemanager.entity.CommandeFabrication;
@@ -168,58 +169,32 @@ public class CommandeFabricationController {
         }
     }
 
-    @PostMapping("/{id}/confirmer")
-    @Operation(summary = "Confirmer la fabrication d'une commande")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "200", description = "Fabrication confirmée"),
-            @ApiResponse(responseCode = "404", description = "Commande introuvable"),
-            @ApiResponse(responseCode = "400", description = "Confirmation impossible")
-    })
-    public ResponseEntity<?> confirmerFabrication(@PathVariable Long id) {
-        try {
-            // ─── 1. Récupérer la commande ───
-            CommandeFabrication commande = commandeFabricationRepository.findById(id)
-                    .orElseThrow(() -> new IllegalArgumentException("Commande introuvable avec l'ID: " + id));
+   @PostMapping("/{id}/confirmer")
+@Operation(summary = "Confirmer la fabrication d'une commande")
+@ApiResponses(value = {
+        @ApiResponse(responseCode = "200", description = "Fabrication confirmée"),
+        @ApiResponse(responseCode = "404", description = "Commande introuvable"),
+        @ApiResponse(responseCode = "400", description = "Confirmation impossible")
+})
+public ResponseEntity<?> confirmerFabrication(@PathVariable Long id) {
+    try {
+        CommandeFabrication commande = commandeFabricationRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Commande introuvable avec l'ID: " + id));
 
-            // ─── 2. Vérifier le statut ───
-            if (commande.getStatut() == StatutCommande.TERMINEE) {
-                return ResponseEntity.badRequest().body("Cette commande est déjà terminée.");
-            }
-            if (commande.getStatut() == StatutCommande.ANNULEE) {
-                return ResponseEntity.badRequest().body("Cette commande est annulée.");
-            }
-
-            // ─── 3. Générer le plan s'il n'existe pas ───
-            PlanFabrication plan = commande.getPlanFabrication();
-            if (plan == null) {
-                plan = fabricationService.preparerFabrication(commande);
-            }
-
-            // ─── 4. Vérifier que le plan est réalisable ───
-            if (!plan.isEstRealisable()) {
-                return ResponseEntity.badRequest().body("Le plan de fabrication n'est pas réalisable (stock insuffisant).");
-            }
-
-            // ─── 5. Confirmer ───
-            fabricationService.confirmerFabrication(plan);
-
-            // ─── 6. Réponse ───
-            Map<String, Object> response = new HashMap<>();
-            response.put("message", "Fabrication confirmée avec succès. Le stock a été mis à jour.");
-            response.put("commandeId", id);
-            response.put("statut", "TERMINEE");
-            
-            return ResponseEntity.ok(response);
-            
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
-        } catch (IllegalStateException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.badRequest().body("Erreur interne: " + e.getMessage());
+        PlanFabrication plan = commande.getPlanFabrication();
+        if (plan == null) {
+            plan = fabricationService.preparerFabrication(commande);
         }
+
+        ConfirmationFabricationResponse response = fabricationService.confirmerFabrication(plan);
+        return ResponseEntity.ok(response);
+
+    } catch (IllegalArgumentException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(e.getMessage());
+    } catch (Exception e) {
+        return ResponseEntity.badRequest().body(e.getMessage());
     }
+}
 
     @PostMapping("/{id}/annuler")
     @Operation(summary = "Annuler la fabrication d'une commande")

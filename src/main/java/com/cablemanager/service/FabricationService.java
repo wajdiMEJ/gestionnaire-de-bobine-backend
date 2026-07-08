@@ -1,15 +1,19 @@
 package com.cablemanager.service;
 
+import com.cablemanager.dto.BesoinCouleurDto;
+import com.cablemanager.dto.BobineSuggestionDto;
+import com.cablemanager.dto.BobineUtiliseeDetailDto;
+import com.cablemanager.dto.ConfirmationFabricationResponse;
+import com.cablemanager.dto.PreparationFabricationResponse;
+import com.cablemanager.entity.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import com.cablemanager.dto.BesoinCouleurDto;
-import com.cablemanager.dto.BobineSuggestionDto;
-import com.cablemanager.dto.PreparationFabricationResponse;
-import com.cablemanager.entity.*;
 import com.cablemanager.repository.*;
 
+import java.io.UnsupportedEncodingException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -43,11 +47,6 @@ public class FabricationService {
             throw new IllegalArgumentException("La commande ne peut pas être nulle.");
         }
 
-        // Si un plan existe déjà, le retourner
-        if (commande.getPlanFabrication() != null) {
-            return commande.getPlanFabrication();
-        }
-
         PlanFabrication plan = PlanFabrication.builder()
                 .dateGeneration(new Date())
                 .commande(commande)
@@ -68,7 +67,6 @@ public class FabricationService {
             float besoinTotal = entry.getValue();
             float besoinRestant = besoinTotal;
 
-            // Anti-gaspillage : utiliser suggererBobines qui privilégie les entamées
             List<Bobine> bobinesSuggerees = rechercheStock.suggererBobines(couleur, section, besoinTotal);
 
             for (Bobine bobine : bobinesSuggerees) {
@@ -90,7 +88,7 @@ public class FabricationService {
 
         commande.setPlanFabrication(plan);
         commande.setStatut(StatutCommande.EN_COURS);
-        
+
         planFabricationRepository.save(plan);
         commandeFabricationRepository.save(commande);
 
@@ -153,49 +151,60 @@ public class FabricationService {
     }
 
     /**
-     * Confirme la fabrication en appliquant la consommation sur les bobines.
+     * Confirme la fabrication : applique la consommation sur chaque bobine
+     * (soustraction réelle) et retourne le détail (ancienne/nouvelle longueur + QR code)
+     * pour affichage côté frontend.
      */
-    public void confirmerFabrication(PlanFabrication plan) {
+    public ConfirmationFabricationResponse confirmerFabrication(PlanFabrication plan) {
         if (plan == null) {
             throw new IllegalArgumentException("Le plan de fabrication ne peut pas être nul.");
         }
 
-        // Recharger le plan depuis la base pour être sûr
-        PlanFabrication planPersiste;
-        if (plan.getId() != null) {
-            planPersiste = planFabricationRepository.findById(plan.getId())
-                    .orElseThrow(() -> new IllegalArgumentException("Plan de fabrication introuvable avec l'ID: " + plan.getId()));
-        } else {
-            planPersiste = plan;
-        }
+        PlanFabrication planPersiste = planFabricationRepository.findById(plan.getId())
+                .orElseThrow(() -> new IllegalArgumentException("Plan de fabrication introuvable avec l'ID: " + plan.getId()));
 
         if (!planPersiste.isEstRealisable()) {
             throw new IllegalStateException("Le plan de fabrication n'est pas réalisable (stock insuffisant).");
         }
 
-        // Vérifier que le plan n'a pas déjà été appliqué
-        if (planPersiste.getCommande() != null 
-            && planPersiste.getCommande().getStatut() == StatutCommande.TERMINEE) {
-            throw new IllegalStateException("Cette fabrication a déjà été confirmée.");
-        }
+        List<BobineUtiliseeDetailDto> details = new ArrayList<>();
 
-        // Apply consumption
-        planPersiste.appliquer();
-
-        // Save updated bobines and log actions
+        // Capture l'état AVANT consommation
         for (BobineUtilisee bu : planPersiste.getBobinesUtilisees()) {
             Bobine bobine = bu.getBobine();
-            
-            // Sauvegarder explicitement la bobine
+            if (bobine == null) continue;
+
+            details.add(BobineUtiliseeDetailDto.builder()
+                    .bobineId(bobine.getId())
+                    .reference(bobine.getReference())
+                    .lot(bobine.getLot())
+                    .nTouret(bobine.getNTouret())
+                    .couleur(bobine.getCouleur() != null ? bobine.getCouleur().name() : null)
+                    .section(bobine.getSection())
+                    .ancienneLongueur(bobine.getLongueurRestante())
+                    .metresPreleves(bu.getMetresUtilises())
+                    .build());
+        }
+
+        // Applique la consommation réelle (soustraction) sur chaque bobine
+        planPersiste.appliquer();
+
+        // Sauvegarde + historique + complète le détail avec la NOUVELLE longueur + QR
+        int i = 0;
+        for (BobineUtilisee bu : planPersiste.getBobinesUtilisees()) {
+            Bobine bobine = bu.getBobine();
+            if (bobine == null) continue;
+
             bobineRepository.save(bobine);
 
-            // Log
+            BobineUtiliseeDetailDto detail = details.get(i++);
+            detail.setNouvelleLongueur(bobine.getLongueurRestante());
+            detail.setQrCodeUrl(genererUrlQrCode(bobine));
+
             ActionHistorique action = ActionHistorique.builder()
                     .type(TypeAction.UTILISATION_RESTE)
-                    .description(String.format("Prélèvement de %.2fm pour la commande %s. Reste: %.2fm",
-                            bu.getMetresUtilises(), 
-                            planPersiste.getCommande().getNumeroCommande(),
-                            bobine.getLongueurRestante()))
+                    .description(String.format("Prélèvement de %.2fm pour la fabrication de la commande %s.",
+                            bu.getMetresUtilises(), planPersiste.getCommande().getNumeroCommande()))
                     .date(new Date())
                     .metresConsommes(bu.getMetresUtilises())
                     .referenceCommande(planPersiste.getCommande().getNumeroCommande())
@@ -206,11 +215,26 @@ public class FabricationService {
             actionHistoriqueRepository.save(action);
         }
 
-        // Save updated order
         commandeFabricationRepository.save(planPersiste.getCommande());
-        
-        // Save plan state
         planFabricationRepository.save(planPersiste);
+
+        return ConfirmationFabricationResponse.builder()
+                .commandeId(planPersiste.getCommande().getId())
+                .numeroCommande(planPersiste.getCommande().getNumeroCommande())
+                .message("Fabrication confirmée avec succès. Le stock a été mis à jour.")
+                .bobinesUtilisees(details)
+                .build();
+    }
+
+    private String genererUrlQrCode(Bobine bobine) {
+        String qrData = String.format("Bobine:%s|Lot:%s|Touret:%s|Restant:%.0fm",
+                bobine.getReference(), bobine.getLot(), bobine.getNTouret(), bobine.getLongueurRestante());
+        try {
+            String encoded = URLEncoder.encode(qrData, StandardCharsets.UTF_8.toString());
+            return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encoded;
+        } catch (UnsupportedEncodingException e) {
+            return "";
+        }
     }
 
     public void annulerFabrication(CommandeFabrication commande) {
